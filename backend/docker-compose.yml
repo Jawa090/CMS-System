@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # ──────────────── PostgreSQL ────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: reactcms_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ali980
+      POSTGRES_DB: CMS
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d CMS"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────── Redis ────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: reactcms_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ""
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────── Backend API ────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reactcms_api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:ali980@postgres:5432/CMS
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    env_file:
+      - .env
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "npx prisma migrate deploy && node dist/main"
+
+  # ──────────────── Bull Dashboard ────────────────
+  bull-board:
+    image: deadly0/bull-board
+    container_name: reactcms_bull_board
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "3002:3000"
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: reactcms_network

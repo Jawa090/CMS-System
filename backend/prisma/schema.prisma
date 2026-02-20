@@ -1,0 +1,429 @@
+// ================================================================
+//  REACTCMS — COMPLETE PRISMA SCHEMA
+//  Production-grade multi-tenant CMS database schema
+// ================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ──────────────────────────────────────────────────────
+//  ENUMS
+// ──────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum CrawlStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  PAUSED
+  CANCELLED
+}
+
+enum PageStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ContentBlockType {
+  HERO
+  NAVBAR
+  FOOTER
+  FEATURES
+  PRICING
+  TESTIMONIALS
+  CTA
+  FORM
+  TABLE
+  GALLERY
+  TEXT
+  HEADING
+  IMAGE
+  VIDEO
+  CARD
+  LIST
+  FAQ
+  CUSTOM
+}
+
+enum JobStatus {
+  WAITING
+  ACTIVE
+  COMPLETED
+  FAILED
+  DELAYED
+  PAUSED
+}
+
+enum ActivityAction {
+  CREATE
+  UPDATE
+  DELETE
+  PUBLISH
+  UNPUBLISH
+  ROLLBACK
+  CRAWL_START
+  CRAWL_STOP
+  LOGIN
+  LOGOUT
+}
+
+// ──────────────────────────────────────────────────────
+//  USERS & AUTH
+// ──────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  password        String
+  firstName       String
+  lastName        String
+  avatar          String?
+  role            UserRole  @default(EDITOR)
+  isActive        Boolean   @default(true)
+  emailVerified   Boolean   @default(false)
+  lastLoginAt     DateTime?
+  refreshToken    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  projects        ProjectMember[]
+  contentEdits    ContentBlock[]  @relation("EditedBy")
+  activityLogs    ActivityLog[]
+  versionHistory  VersionHistory[]
+
+  @@map("users")
+}
+
+// ──────────────────────────────────────────────────────
+//  PROJECTS (SITES)
+// ──────────────────────────────────────────────────────
+
+model Project {
+  id              String    @id @default(uuid())
+  name            String
+  description     String?
+  siteUrl         String
+  slug            String    @unique
+  faviconUrl      String?
+  isActive        Boolean   @default(true)
+  settings        Json      @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  members         ProjectMember[]
+  pages           Page[]
+  crawlJobs       CrawlJob[]
+  mediaFiles      MediaFile[]
+  activityLogs    ActivityLog[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id          String    @id @default(uuid())
+  projectId   String
+  userId      String
+  role        UserRole  @default(VIEWER)
+  joinedAt    DateTime  @default(now())
+
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+// ──────────────────────────────────────────────────────
+//  CRAWL JOBS
+// ──────────────────────────────────────────────────────
+
+model CrawlJob {
+  id              String      @id @default(uuid())
+  projectId       String
+  status          CrawlStatus @default(QUEUED)
+  startUrl        String
+  maxDepth        Int         @default(5)
+  maxPages        Int         @default(500)
+  options         Json        @default("{}")
+  
+  // Stats
+  pagesFound      Int         @default(0)
+  pagesCrawled    Int         @default(0)
+  pagesSkipped    Int         @default(0)
+  errors          Json        @default("[]")
+  
+  // Timestamps
+  queuedAt        DateTime    @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  updatedAt       DateTime    @updatedAt
+
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  crawledPages    CrawledPage[]
+
+  @@map("crawl_jobs")
+}
+
+model CrawledPage {
+  id              String    @id @default(uuid())
+  crawlJobId      String
+  url             String
+  path            String
+  title           String?
+  statusCode      Int       @default(200)
+  html            String?   @db.Text
+  markdown        String?   @db.Text
+  screenshotUrl   String?
+  
+  // Extracted data
+  links           Json      @default("[]")
+  images          Json      @default("[]")
+  forms           Json      @default("[]")
+  headers         Json      @default("{}")
+  
+  // Meta
+  isIndexable     Boolean   @default(true)
+  crawledAt       DateTime  @default(now())
+
+  crawlJob        CrawlJob  @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+
+  @@map("crawled_pages")
+}
+
+// ──────────────────────────────────────────────────────
+//  PAGES
+// ──────────────────────────────────────────────────────
+
+model Page {
+  id              String      @id @default(uuid())
+  projectId       String
+  path            String
+  title           String
+  slug            String
+  status          PageStatus  @default(DRAFT)
+  isHomepage      Boolean     @default(false)
+  isDynamic       Boolean     @default(false)   // e.g. /blog/:slug
+  routePattern    String?                         // regex pattern for dynamic routes
+  
+  // Layout
+  layout          String?
+  template        String?
+  
+  // Analytics
+  viewCount       Int         @default(0)
+  editCount       Int         @default(0)
+  
+  publishedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  project         Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  seoMetadata     SeoMetadata?
+  contentBlocks   ContentBlock[]
+  components      PageComponent[]
+  versionHistory  VersionHistory[]
+
+  @@unique([projectId, path])
+  @@map("pages")
+}
+
+// ──────────────────────────────────────────────────────
+//  COMPONENTS
+// ──────────────────────────────────────────────────────
+
+model PageComponent {
+  id              String            @id @default(uuid())
+  pageId          String
+  name            String            // e.g. "Navbar", "HeroSection"
+  componentType   ContentBlockType  @default(CUSTOM)
+  selector        String?           // CSS selector or React component name
+  order           Int               @default(0)
+  isReusable      Boolean           @default(false)
+  aiConfidence    Float             @default(0)  // AI detection confidence 0-1
+  rawHtml         String?           @db.Text
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  page            Page              @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  contentBlocks   ContentBlock[]
+
+  @@map("page_components")
+}
+
+// ──────────────────────────────────────────────────────
+//  CONTENT BLOCKS
+// ──────────────────────────────────────────────────────
+
+model ContentBlock {
+  id              String            @id @default(uuid())
+  pageId          String
+  componentId     String?
+  type            ContentBlockType  @default(CUSTOM)
+  name            String            // Human-readable label
+  key             String            // Machine key, e.g. "hero_heading"
+  value           String            @db.Text
+  valueType       String            @default("text")  // text|html|json|image|url
+  order           Int               @default(0)
+  isEditable      Boolean           @default(true)
+  isRequired      Boolean           @default(false)
+  metadata        Json              @default("{}")
+  
+  editedById      String?
+  lastEditedAt    DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  page            Page              @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  component       PageComponent?    @relation(fields: [componentId], references: [id])
+  editedBy        User?             @relation("EditedBy", fields: [editedById], references: [id])
+
+  @@unique([pageId, key])
+  @@map("content_blocks")
+}
+
+// ──────────────────────────────────────────────────────
+//  SEO METADATA
+// ──────────────────────────────────────────────────────
+
+model SeoMetadata {
+  id              String    @id @default(uuid())
+  pageId          String    @unique
+  
+  // Basic SEO
+  title           String?
+  description     String?   @db.Text
+  keywords        String[]  @default([])
+  canonical       String?
+  robots          String    @default("index, follow")
+  
+  // Open Graph
+  ogTitle         String?
+  ogDescription   String?   @db.Text
+  ogImage         String?
+  ogType          String    @default("website")
+  
+  // Twitter Cards
+  twitterCard     String    @default("summary_large_image")
+  twitterTitle    String?
+  twitterDesc     String?   @db.Text
+  twitterImage    String?
+  
+  // Structured Data
+  jsonLd          Json?
+  
+  // Score
+  seoScore        Int       @default(0)
+  scoreDetails    Json      @default("{}")
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  page            Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@map("seo_metadata")
+}
+
+// ──────────────────────────────────────────────────────
+//  MEDIA LIBRARY
+// ──────────────────────────────────────────────────────
+
+model MediaFile {
+  id              String    @id @default(uuid())
+  projectId       String
+  filename        String
+  originalName    String
+  mimeType        String
+  size            Int
+  url             String
+  thumbnailUrl    String?
+  alt             String?
+  caption         String?
+  width           Int?
+  height          Int?
+  storageType     String    @default("local")  // local|s3|cloudinary
+  storagePath     String
+  tags            String[]  @default([])
+  metadata        Json      @default("{}")
+  uploadedAt      DateTime  @default(now())
+
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("media_files")
+}
+
+// ──────────────────────────────────────────────────────
+//  VERSION HISTORY & ROLLBACK
+// ──────────────────────────────────────────────────────
+
+model VersionHistory {
+  id              String    @id @default(uuid())
+  pageId          String
+  version         Int
+  snapshot        Json      // Full page content snapshot
+  changesSummary  String?
+  createdById     String
+  restoredFrom    String?   // ID of version this was restored from
+  createdAt       DateTime  @default(now())
+
+  page            Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  createdBy       User      @relation(fields: [createdById], references: [id])
+
+  @@unique([pageId, version])
+  @@map("version_history")
+}
+
+// ──────────────────────────────────────────────────────
+//  ACTIVITY LOGS
+// ──────────────────────────────────────────────────────
+
+model ActivityLog {
+  id              String          @id @default(uuid())
+  projectId       String?
+  userId          String
+  action          ActivityAction
+  entityType      String          // "page" | "content_block" | "project" | etc.
+  entityId        String?
+  details         Json            @default("{}")
+  ipAddress       String?
+  userAgent       String?
+  createdAt       DateTime        @default(now())
+
+  project         Project?        @relation(fields: [projectId], references: [id])
+  user            User            @relation(fields: [userId], references: [id])
+
+  @@map("activity_logs")
+}
+
+// ──────────────────────────────────────────────────────
+//  ANALYTICS
+// ──────────────────────────────────────────────────────
+
+model PageAnalytics {
+  id              String    @id @default(uuid())
+  pageId          String
+  date            DateTime  @db.Date
+  views           Int       @default(0)
+  uniqueVisitors  Int       @default(0)
+  avgTimeOnPage   Float     @default(0)
+  bounceRate      Float     @default(0)
+  metadata        Json      @default("{}")
+
+  @@unique([pageId, date])
+  @@map("page_analytics")
+}
